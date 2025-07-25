@@ -1,0 +1,126 @@
+import { Injectable, NgZone } from '@angular/core';
+import { filter } from 'rxjs';
+import { TimerService } from './timer.service';
+
+@Injectable({
+  providedIn: 'root'
+})
+export class PiPService {
+  private pipVideo: HTMLVideoElement | null = null;
+  private canvas: HTMLCanvasElement;
+  private ctx: CanvasRenderingContext2D;
+  private stream: MediaStream | null = null;
+
+  constructor(
+    private timerService: TimerService,
+    private ngZone: NgZone
+  ) {
+    this.canvas = document.createElement('canvas');
+    this.canvas.width = 320;
+    this.canvas.height = 180;
+    this.ctx = this.canvas.getContext('2d')!;
+
+    // Auto-start PiP when timer starts running
+    this.timerService.timerState$.pipe(
+      filter(state => state.isRunning && !this.pipVideo)
+    ).subscribe(() => {
+      this.ngZone.runOutsideAngular(() => this.startPiP());
+    });
+
+    // Auto-stop PiP when timer is reset
+    this.timerService.timerState$.pipe(
+      filter(state => !state.isRunning && !state.isPaused)
+    ).subscribe(() => {
+      this.stopPiP();
+    });
+  }
+
+  private async startPiP() {
+    if (this.pipVideo) return;
+
+    try {
+      // Create video element
+      this.pipVideo = document.createElement('video');
+      this.pipVideo.muted = true;
+      this.pipVideo.playsInline = true;
+      document.body.appendChild(this.pipVideo);
+
+      // Set up canvas and stream
+      this.stream = this.canvas.captureStream();
+      this.pipVideo.srcObject = this.stream;
+      await this.pipVideo.play();
+
+      // Enter PiP mode
+      await this.pipVideo.requestPictureInPicture();
+      document.body.removeChild(this.pipVideo);
+
+      // Start rendering timer
+      this.renderTimer();
+
+      // Handle PiP window close
+      this.pipVideo.addEventListener('leavepictureinpicture', () => {
+        this.stopPiP();
+      });
+
+    } catch (error) {
+      console.error('Failed to start Picture-in-Picture:', error);
+      this.stopPiP();
+    }
+  }
+
+  private stopPiP() {
+    if (document.pictureInPictureElement) {
+      document.exitPictureInPicture();
+    }
+
+    if (this.stream) {
+      this.stream.getTracks().forEach(track => track.stop());
+      this.stream = null;
+    }
+
+    if (this.pipVideo) {
+      this.pipVideo.remove();
+      this.pipVideo = null;
+    }
+  }
+
+  private renderTimer() {
+    if (!this.ctx || !this.pipVideo) return;
+
+    const draw = () => {
+      const state = this.timerService.timerState.value;
+
+      // Clear canvas
+      this.ctx.fillStyle = '#1e1e1e';
+      this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+
+      // Draw time
+      this.ctx.font = '48px Arial';
+      this.ctx.fillStyle = state.type === 'work' ? '#4CAF50' : '#FF5722';
+      const timeText = `${state.minutes.toString().padStart(2, '0')}:${state.seconds.toString().padStart(2, '0')}`;
+      const timeMetrics = this.ctx.measureText(timeText);
+      this.ctx.fillText(
+        timeText,
+        (this.canvas.width - timeMetrics.width) / 2,
+        this.canvas.height / 2
+      );
+
+      // Draw status
+      this.ctx.font = '24px Arial';
+      const statusText = state.isPaused ? 'PAUSED' : (state.type === 'work' ? 'WORK TIME' : 'BREAK TIME');
+      const statusMetrics = this.ctx.measureText(statusText);
+      this.ctx.fillText(
+        statusText,
+        (this.canvas.width - statusMetrics.width) / 2,
+        this.canvas.height / 2 + 40
+      );
+
+      // Continue animation
+      if (this.pipVideo) {
+        requestAnimationFrame(draw);
+      }
+    };
+
+    requestAnimationFrame(draw);
+  }
+}
